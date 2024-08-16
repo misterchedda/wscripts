@@ -1,0 +1,3 @@
+# wscriptzz
+
+wscript dump
