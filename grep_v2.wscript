@@ -12,7 +12,8 @@ const SEARCH_STRING = "TeleportPuppet"; // Change this to search for different s
 const INCLUDE_QUESTPHASE = true;       // Search in .questphase files
 const INCLUDE_SCENE = true;            // Search in .scene files
 const MAX_FILES_TO_PROCESS = 250;     // Limit to prevent memory issues
-const SHOW_PROGRESS_EVERY = 5;        // Show progress every N files
+const SHOW_PROGRESS_EVERY = 50;        // Show progress every N files
+const MAX_NODES_PER_FILE = 150;        // Skip files with more than N nodes
 
 // ===== MAIN FUNCTION =====
 function main() {
@@ -59,6 +60,7 @@ function initializeState() {
     return {
         targetFiles: [],
         processedFiles: 0,
+        skippedFiles: 0,
         matchingFiles: [],
         totalMatches: 0,
         errors: [],
@@ -87,7 +89,6 @@ function collectTargetFiles(state) {
             state.targetFiles.push(gameFile);
             fileCount++;
             
-            // Prevent memory issues
             if (fileCount >= MAX_FILES_TO_PROCESS) {
                 Logger.Warning(`Reached maximum file limit (${MAX_FILES_TO_PROCESS}). Some files may be skipped.`);
                 break;
@@ -133,6 +134,18 @@ function searchFiles(state) {
                 continue;
             }
             
+            // Check node count and skip if file is too large
+            const nodeCount = getNodeCount(parsedContent, gameFile.FileName);
+            if (nodeCount > MAX_NODES_PER_FILE) {
+                Logger.Info(`Skipping ${gameFile.FileName}: ${nodeCount} nodes (exceeds limit of ${MAX_NODES_PER_FILE})`);
+                state.skippedFiles++;
+                continue;
+            }
+            
+            if (nodeCount > 0) {
+                Logger.Debug(`Processing ${gameFile.FileName}: ${nodeCount} nodes`);
+            }
+            
             // Search for string in the parsed content
             const searchResults = { count: 0, contexts: [] };
             searchInObject(parsedContent, SEARCH_STRING, searchResults, gameFile.FileName);
@@ -155,6 +168,77 @@ function searchFiles(state) {
     }
     
     state.processedFiles = processed;
+}
+
+// ===== NODE COUNTING FUNCTION =====
+function getNodeCount(parsedContent, fileName) {
+    try {
+        // Determine file type and get appropriate node count
+        const lowerFileName = fileName.toLowerCase();
+        
+        // Debug logging to see the structure
+        if (parsedContent.Data && parsedContent.Data.RootChunk) {
+            Logger.Debug(`Checking node count for: ${fileName}`);
+            if (lowerFileName.endsWith('.scene')) {
+                Logger.Debug(`Scene file structure check - has sceneGraph: ${!!parsedContent.Data.RootChunk.sceneGraph}`);
+                if (parsedContent.Data.RootChunk.sceneGraph) {
+                    Logger.Debug(`sceneGraph has Data: ${!!parsedContent.Data.RootChunk.sceneGraph.Data}`);
+                    if (parsedContent.Data.RootChunk.sceneGraph.Data) {
+                        Logger.Debug(`sceneGraph.Data has graph: ${!!parsedContent.Data.RootChunk.sceneGraph.Data.graph}`);
+                        if (parsedContent.Data.RootChunk.sceneGraph.Data.graph) {
+                            Logger.Debug(`graph is array: ${Array.isArray(parsedContent.Data.RootChunk.sceneGraph.Data.graph)}`);
+                            Logger.Debug(`graph length: ${Array.isArray(parsedContent.Data.RootChunk.sceneGraph.Data.graph) ? parsedContent.Data.RootChunk.sceneGraph.Data.graph.length : 'N/A'}`);
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (lowerFileName.endsWith('.scene')) {
+            // Scene files: graph is in sceneGraph.Data.graph
+            if (parsedContent.Data && 
+                parsedContent.Data.RootChunk && 
+                parsedContent.Data.RootChunk.sceneGraph &&
+                parsedContent.Data.RootChunk.sceneGraph.Data &&
+                parsedContent.Data.RootChunk.sceneGraph.Data.graph &&
+                Array.isArray(parsedContent.Data.RootChunk.sceneGraph.Data.graph)) {
+                return parsedContent.Data.RootChunk.sceneGraph.Data.graph.length;
+            }
+            
+            // Fallback: check if graph is directly under RootChunk
+            if (parsedContent.Data &&
+                parsedContent.Data.RootChunk &&
+                parsedContent.Data.RootChunk.graph &&
+                Array.isArray(parsedContent.Data.RootChunk.graph)) {
+                return parsedContent.Data.RootChunk.graph.length;
+            }
+            
+        } else if (lowerFileName.endsWith('.questphase')) {
+            // Quest phase files: check graph.nodes (nodes array inside graph object)
+            if (parsedContent.Data && 
+                parsedContent.Data.RootChunk && 
+                parsedContent.Data.RootChunk.graph &&
+                parsedContent.Data.RootChunk.graph.nodes &&
+                Array.isArray(parsedContent.Data.RootChunk.graph.nodes)) {
+                return parsedContent.Data.RootChunk.graph.nodes.length;
+            }
+            
+            // Alternative: check if graph itself is the nodes array
+            if (parsedContent.Data && 
+                parsedContent.Data.RootChunk && 
+                parsedContent.Data.RootChunk.graph &&
+                Array.isArray(parsedContent.Data.RootChunk.graph)) {
+                return parsedContent.Data.RootChunk.graph.length;
+            }
+        }
+        
+        // If we can't find nodes in expected locations, return 0 (will be processed)
+        return 0;
+        
+    } catch (error) {
+        Logger.Warning(`Error counting nodes in ${fileName}: ${error.message}`);
+        return 0; // Return 0 to allow processing if we can't determine node count
+    }
 }
 
 // ===== RECURSIVE SEARCH FUNCTION =====
@@ -211,6 +295,7 @@ function generateResults(state) {
     Logger.Info("=== Search Results ===");
     Logger.Info(`Search string: "${SEARCH_STRING}"`);
     Logger.Info(`Files processed: ${state.processedFiles}`);
+    Logger.Info(`Files skipped (too many nodes): ${state.skippedFiles}`);
     Logger.Info(`Files with matches: ${state.matchingFiles.length}`);
     Logger.Info(`Total matches found: ${state.totalMatches}`);
     Logger.Info(`Errors encountered: ${state.errors.length}`);
@@ -232,6 +317,7 @@ function generateResults(state) {
     const message = `String Search Complete!\n\n` +
                    `Search string: "${SEARCH_STRING}"\n` +
                    `Files processed: ${state.processedFiles}\n` +
+                   `Files skipped (too many nodes): ${state.skippedFiles}\n` +
                    `Files with matches: ${state.matchingFiles.length}\n` +
                    `Total matches: ${state.totalMatches}\n` +
                    `Duration: ${duration}s\n\n` +
@@ -246,6 +332,7 @@ function generateDetailedReport(state, duration) {
     report += `Generated: ${new Date().toISOString()}\n`;
     report += `Search String: "${SEARCH_STRING}"\n`;
     report += `Files Processed: ${state.processedFiles}\n`;
+    report += `Files Skipped (too many nodes): ${state.skippedFiles}\n`;
     report += `Files with Matches: ${state.matchingFiles.length}\n`;
     report += `Total Matches: ${state.totalMatches}\n`;
     report += `Duration: ${duration} seconds\n\n`;
