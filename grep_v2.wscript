@@ -11,7 +11,7 @@ import * as TypeHelper from 'TypeHelper.wscript';
 const SEARCH_STRING = "TeleportPuppet"; // Change this to search for different strings
 const INCLUDE_QUESTPHASE = true;       // Search in .questphase files
 const INCLUDE_SCENE = true;            // Search in .scene files
-const MAX_FILES_TO_PROCESS = 250;     // Limit to prevent memory issues
+const MAX_FILES_TO_PROCESS = 250;     // Max files to search
 const SHOW_PROGRESS_EVERY = 50;        // Show progress every N files
 const MAX_NODES_PER_FILE = 150;        // Skip files with more than N nodes
 
