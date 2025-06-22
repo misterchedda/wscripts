@@ -1,24 +1,27 @@
 // Search for string in quest phases and scene files directly from archives
 // @author MisterChedda
-// @version 1.0
+// @version 1.1
 // Searches all .questphase and .scene files in game archives for a given string
+// and extracts context around each match
 // No need to add files to project first!
 
 import * as Logger from 'Logger.wscript';
 import * as TypeHelper from 'TypeHelper.wscript';
 
 // ===== CONFIGURATION =====
-const SEARCH_STRING = "TeleportPuppet"; // Change this to search for different strings
-const INCLUDE_QUESTPHASE = true;       // Search in .questphase files
+const SEARCH_STRING = "managerName"; // Change this to search for different strings
+const CONTEXT_LENGTH = 150;              // Number of characters to extract after the match
+const INCLUDE_QUESTPHASE = false;       // Search in .questphase files
 const INCLUDE_SCENE = true;            // Search in .scene files
-const MAX_FILES_TO_PROCESS = 250;     // Max files to search
+const MAX_FILES_TO_PROCESS = 500;     // Limit to prevent memory issues
 const SHOW_PROGRESS_EVERY = 50;        // Show progress every N files
-const MAX_NODES_PER_FILE = 150;        // Skip files with more than N nodes
+const MAX_NODES_PER_FILE = 170;        // Skip files with more than N nodes
 
 // ===== MAIN FUNCTION =====
 function main() {
-    Logger.Info("=== Archive File String Search ===");
+    Logger.Info("=== Archive File String Search with Context ===");
     Logger.Info(`Searching for: "${SEARCH_STRING}"`);
+    Logger.Info(`Context length: ${CONTEXT_LENGTH} characters`);
     Logger.Info(`Include .questphase: ${INCLUDE_QUESTPHASE}`);
     Logger.Info(`Include .scene: ${INCLUDE_SCENE}`);
     
@@ -146,15 +149,20 @@ function searchFiles(state) {
                 Logger.Debug(`Processing ${gameFile.FileName}: ${nodeCount} nodes`);
             }
             
-            // Search for string in the parsed content
+            // Search for string in the parsed content with context extraction
             const searchResults = { count: 0, contexts: [] };
+            
+            // Also search in the raw JSON string for better context extraction
+            searchInJsonString(fileContent, SEARCH_STRING, searchResults, gameFile.FileName);
+            
+            // Also search in the parsed object structure
             searchInObject(parsedContent, SEARCH_STRING, searchResults, gameFile.FileName);
             
             if (searchResults.count > 0) {
                 state.matchingFiles.push({
                     fileName: gameFile.FileName,
                     matchCount: searchResults.count,
-                    contexts: searchResults.contexts.slice(0, 5) // Limit contexts to first 5
+                    contexts: searchResults.contexts.slice(0, 10) // Limit contexts to first 10
                 });
                 
                 state.totalMatches += searchResults.count;
@@ -241,21 +249,65 @@ function getNodeCount(parsedContent, fileName) {
     }
 }
 
-// ===== RECURSIVE SEARCH FUNCTION =====
+// ===== JSON STRING SEARCH FOR BETTER CONTEXT =====
+function searchInJsonString(jsonString, searchString, results, fileName) {
+    const lowerJson = jsonString.toLowerCase();
+    const lowerSearch = searchString.toLowerCase();
+    
+    let index = 0;
+    while ((index = lowerJson.indexOf(lowerSearch, index)) !== -1) {
+        // Extract context starting from the match position
+        const contextStart = index;
+        const contextEnd = Math.min(index + CONTEXT_LENGTH, jsonString.length);
+        const context = jsonString.substring(contextStart, contextEnd);
+        
+        // Also get some context before the match for better understanding
+        const preContextStart = Math.max(0, index - 20);
+        const preContext = jsonString.substring(preContextStart, index);
+        
+        results.count++;
+        results.contexts.push({
+            path: "[Raw JSON]",
+            value: `...${preContext}${context}${contextEnd < jsonString.length ? '...' : ''}`,
+            fullMatch: context,
+            matchPosition: index,
+            contextLength: CONTEXT_LENGTH
+        });
+        
+        index += searchString.length; // Move past this match
+    }
+}
+
+// ===== RECURSIVE SEARCH FUNCTION WITH CONTEXT =====
 function searchInObject(obj, searchString, results, fileName, currentPath = "") {
     if (typeof obj === 'string') {
-        // Direct string search
+        // Direct string search with context extraction
         const lowerObj = obj.toLowerCase();
         const lowerSearch = searchString.toLowerCase();
         
-        if (lowerObj.includes(lowerSearch)) {
+        let index = 0;
+        while ((index = lowerObj.indexOf(lowerSearch, index)) !== -1) {
+            // Extract context starting from the match position
+            const contextStart = index;
+            const contextEnd = Math.min(index + CONTEXT_LENGTH, obj.length);
+            const context = obj.substring(contextStart, contextEnd);
+            
+            // Also get some context before the match
+            const preContextStart = Math.max(0, index - 10);
+            const preContext = obj.substring(preContextStart, index);
+            
             results.count++;
             results.contexts.push({
                 path: currentPath,
-                value: obj.length > 200 ? obj.substring(0, 200) + "..." : obj,
-                fullMatch: obj
+                value: `...${preContext}${context}${contextEnd < obj.length ? '...' : ''}`,
+                fullMatch: context,
+                matchPosition: index,
+                contextLength: CONTEXT_LENGTH
             });
+            
+            index += searchString.length; // Move past this match
         }
+        
     } else if (Array.isArray(obj)) {
         // Handle arrays
         for (let i = 0; i < obj.length; i++) {
@@ -271,11 +323,27 @@ function searchInObject(obj, searchString, results, fileName, currentPath = "") 
                 const lowerSearch = searchString.toLowerCase();
                 
                 if (lowerKey.includes(lowerSearch)) {
+                    // For property names, show the key and try to show some of the value
+                    let valuePreview = "";
+                    try {
+                        if (typeof obj[key] === 'string') {
+                            valuePreview = obj[key].substring(0, CONTEXT_LENGTH);
+                        } else if (typeof obj[key] === 'object') {
+                            valuePreview = JSON.stringify(obj[key]).substring(0, CONTEXT_LENGTH);
+                        } else {
+                            valuePreview = String(obj[key]);
+                        }
+                    } catch (e) {
+                        valuePreview = "[Unable to preview value]";
+                    }
+                    
                     results.count++;
                     results.contexts.push({
                         path: currentPath ? `${currentPath}.${key}` : key,
-                        value: `[Property name: ${key}]`,
-                        fullMatch: key
+                        value: `${key}: ${valuePreview}${valuePreview.length >= CONTEXT_LENGTH ? '...' : ''}`,
+                        fullMatch: `${key}: ${valuePreview}`,
+                        matchPosition: 0,
+                        contextLength: CONTEXT_LENGTH
                     });
                 }
                 
@@ -294,6 +362,7 @@ function generateResults(state) {
     
     Logger.Info("=== Search Results ===");
     Logger.Info(`Search string: "${SEARCH_STRING}"`);
+    Logger.Info(`Context length: ${CONTEXT_LENGTH} characters`);
     Logger.Info(`Files processed: ${state.processedFiles}`);
     Logger.Info(`Files skipped (too many nodes): ${state.skippedFiles}`);
     Logger.Info(`Files with matches: ${state.matchingFiles.length}`);
@@ -305,7 +374,7 @@ function generateResults(state) {
     let reportContent = generateDetailedReport(state, duration);
     
     // Save report to raw folder
-    const reportFileName = `search_results_${SEARCH_STRING.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.txt`;
+    const reportFileName = `search_context_${SEARCH_STRING.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.txt`;
     try {
         wkit.SaveToRaw(reportFileName, reportContent);
         Logger.Info(`Detailed report saved to: ${reportFileName}`);
@@ -314,8 +383,9 @@ function generateResults(state) {
     }
     
     // Show completion message
-    const message = `String Search Complete!\n\n` +
+    const message = `String Search with Context Complete!\n\n` +
                    `Search string: "${SEARCH_STRING}"\n` +
+                   `Context length: ${CONTEXT_LENGTH} characters\n` +
                    `Files processed: ${state.processedFiles}\n` +
                    `Files skipped (too many nodes): ${state.skippedFiles}\n` +
                    `Files with matches: ${state.matchingFiles.length}\n` +
@@ -327,10 +397,11 @@ function generateResults(state) {
 }
 
 function generateDetailedReport(state, duration) {
-    let report = "Archive File String Search Report\n";
-    report += "=".repeat(50) + "\n\n";
+    let report = "Archive File String Search with Context Report\n";
+    report += "=".repeat(60) + "\n\n";
     report += `Generated: ${new Date().toISOString()}\n`;
     report += `Search String: "${SEARCH_STRING}"\n`;
+    report += `Context Length: ${CONTEXT_LENGTH} characters\n`;
     report += `Files Processed: ${state.processedFiles}\n`;
     report += `Files Skipped (too many nodes): ${state.skippedFiles}\n`;
     report += `Files with Matches: ${state.matchingFiles.length}\n`;
@@ -338,22 +409,26 @@ function generateDetailedReport(state, duration) {
     report += `Duration: ${duration} seconds\n\n`;
     
     if (state.matchingFiles.length > 0) {
-        report += "MATCHING FILES:\n";
-        report += "-".repeat(30) + "\n\n";
+        report += "MATCHING FILES WITH CONTEXT:\n";
+        report += "-".repeat(40) + "\n\n";
         
         for (const match of state.matchingFiles) {
             report += `File: ${match.fileName}\n`;
             report += `Matches: ${match.matchCount}\n`;
             
             if (match.contexts.length > 0) {
-                report += "Sample contexts:\n";
-                for (let i = 0; i < Math.min(3, match.contexts.length); i++) {
+                report += "Contexts found:\n";
+                for (let i = 0; i < match.contexts.length; i++) {
                     const context = match.contexts[i];
-                    report += `  - Path: ${context.path}\n`;
-                    report += `    Value: ${context.value}\n`;
+                    report += `  ${i + 1}. Path: ${context.path}\n`;
+                    report += `     Context: ${context.value}\n`;
+                    if (context.matchPosition !== undefined) {
+                        report += `     Position: ${context.matchPosition}\n`;
+                    }
+                    report += "\n";
                 }
             }
-            report += "\n";
+            report += "-".repeat(40) + "\n\n";
         }
     }
     
