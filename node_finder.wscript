@@ -1,7 +1,7 @@
 // GENERIC NODE FINDER SCRIPT
 // =========================
-// Purpose: Find and display complete JSON snippets for any specified scene or quest node type
-// Configurable: Node type, result limits, file limits, and output format
+// Purpose: Find and display complete JSON snippets for any specified scene, or quest node type. 
+// Configurable: Node type, result limits, file limits, scene category, and output format
 // =========================
 
 // @author MisterChedda
@@ -14,16 +14,19 @@ import * as TypeHelper from 'TypeHelper.wscript';
 // Change these values to customize the search
 
 // TARGET NODE TYPE - Change this to search for different node types
-const TARGET_NODE_TYPE = "scnXorNode";        // Examples: "scnXorNode", "scnSectionNode", "scnStartNode", "scnEndNode", "questFlowControlNodeDefinition"
+const TARGET_NODE_TYPE = "scnXorNode";        // Examples: "scnQuestNode", "scnSectionNode", "scnStartNode", "scnEndNode", "questFlowControlNodeDefinition"
 
 // RESULT LIMITS
-const MAX_RESULTS = 10;                         // Maximum number of results to display
-const MAX_FILES_TO_PROCESS = 2000;             // Maximum files to scan (set to 99999 for unlimited)
-const MAX_NODES_PER_FILE = 150;                // Skip files with more than this many nodes (to help target simpler scenes/questphase)
+const MAX_RESULTS = 30;                         // Maximum number of results to display
+const MAX_FILES_TO_PROCESS = 3000;             // Maximum files to scan (set to 99999 for unlimited)
+const MAX_NODES_PER_FILE = 250;                // Skip files with more than this many nodes
 
 // FILE TYPE SELECTION
 const INCLUDE_SCENE = true;                     // Include .scene files
-const INCLUDE_QUESTPHASE = false;                // Include .questphase files
+const INCLUDE_QUESTPHASE = true;                // Include .questphase files
+
+// SCENE CATEGORY FILTERING (only applies to .scene files)
+const FILTER_BY_CATEGORY = "otherOpenWorld";                 // Leave empty for all categories, or specify: "voiceset", "mainQuests", "sideQuests", "minorQuests", "otherQuests", "dialoguesQuests", "streetOpenWorld", "vendorsOpenWorld", "dancefloorsOpenWorld", "cityOpenWorld", "chatsOpenWorld", "otherOpenWorld", "holocalls", "other"
 
 // PROGRESS REPORTING
 const PROGRESS_INTERVAL = 100;                 // Show progress every N files
@@ -31,7 +34,7 @@ const SHOW_DETAILED_PROGRESS = true;           // Show detailed progress info
 
 // OUTPUT OPTIONS
 const SAVE_RESULTS = true;                      // Save results to file
-const SHOW_FULL_JSON = false;                   // Show complete JSON or just key properties
+const SHOW_FULL_JSON = true;                   // Show complete JSON or just key properties
 
 // ===== MAIN FUNCTION =====
 function main() {
@@ -41,6 +44,7 @@ function main() {
     Logger.Info(`Max files to process: ${MAX_FILES_TO_PROCESS}`);
     Logger.Info(`Include .scene files: ${INCLUDE_SCENE}`);
     Logger.Info(`Include .questphase files: ${INCLUDE_QUESTPHASE}`);
+    Logger.Info(`Filter by category: ${FILTER_BY_CATEGORY || 'All categories'}`);
     
     const state = initializeState();
     
@@ -87,6 +91,7 @@ function initializeState() {
         foundNodes: [],
         totalNodesFound: 0,
         filesWithTargetNodes: 0,
+        categoryFilteredFiles: 0,
         
         // Output file names
         outputJson: `node_finder_${TARGET_NODE_TYPE}_${Date.now()}.json`,
@@ -173,14 +178,23 @@ function searchForNodes(state) {
                 continue;
             }
             
-            if (!parsedContent) continue;
-            
-            // Check node count and skip if file is too large
-            const nodeCount = getNodeCount(parsedContent, gameFile.FileName);
-            if (nodeCount > MAX_NODES_PER_FILE) {
-                state.skippedFiles++;
-                continue;
-            }
+                         if (!parsedContent) continue;
+             
+             // Check scene category filter (only applies to .scene files)
+             if (FILTER_BY_CATEGORY && gameFile.FileName.toLowerCase().endsWith('.scene')) {
+                 const sceneCategory = parsedContent?.Data?.RootChunk?.sceneCategoryTag;
+                 if (sceneCategory && sceneCategory !== FILTER_BY_CATEGORY) {
+                     state.categoryFilteredFiles++;
+                     continue;
+                 }
+             }
+             
+             // Check node count and skip if file is too large
+             const nodeCount = getNodeCount(parsedContent, gameFile.FileName);
+             if (nodeCount > MAX_NODES_PER_FILE) {
+                 state.skippedFiles++;
+                 continue;
+             }
             
             // Search for target nodes in this file
             const foundInFile = searchFileForTargetNodes(parsedContent, gameFile.FileName);
@@ -312,6 +326,7 @@ function displayResults(state) {
     Logger.Info("=== SEARCH RESULTS ===");
     Logger.Info(`Files processed: ${state.processedFiles}`);
     Logger.Info(`Files skipped (too large): ${state.skippedFiles}`);
+    Logger.Info(`Files filtered by category: ${state.categoryFilteredFiles}`);
     Logger.Info(`Files with target nodes: ${state.filesWithTargetNodes}`);
     Logger.Info(`Total nodes found: ${state.totalNodesFound}`);
     Logger.Info(`Showing first ${state.foundNodes.length} results`);
@@ -348,15 +363,18 @@ function displayResults(state) {
 function saveResults(state, duration) {
     try {
         // Save JSON data
-        const jsonData = {
-            metadata: {
-                searchDate: new Date().toISOString(),
-                targetNodeType: TARGET_NODE_TYPE,
-                filesProcessed: state.processedFiles,
-                totalNodesFound: state.totalNodesFound,
-                resultsShown: state.foundNodes.length,
-                duration: duration
-            },
+                 const jsonData = {
+             metadata: {
+                 searchDate: new Date().toISOString(),
+                 targetNodeType: TARGET_NODE_TYPE,
+                 categoryFilter: FILTER_BY_CATEGORY || "All categories",
+                 filesProcessed: state.processedFiles,
+                 filesSkipped: state.skippedFiles,
+                 categoryFilteredFiles: state.categoryFilteredFiles,
+                 totalNodesFound: state.totalNodesFound,
+                 resultsShown: state.foundNodes.length,
+                 duration: duration
+             },
             results: state.foundNodes,
             errors: state.errors
         };
@@ -365,13 +383,16 @@ function saveResults(state, duration) {
         Logger.Info(`JSON results saved to: ${state.outputJson}`);
         
         // Save text report
-        let textReport = `GENERIC NODE FINDER REPORT\n`;
-        textReport += `Target Node Type: ${TARGET_NODE_TYPE}\n`;
-        textReport += `Search Date: ${new Date().toISOString()}\n`;
-        textReport += `Files Processed: ${state.processedFiles}\n`;
-        textReport += `Total Nodes Found: ${state.totalNodesFound}\n`;
-        textReport += `Results Shown: ${state.foundNodes.length}\n`;
-        textReport += `Duration: ${duration} seconds\n\n`;
+                 let textReport = `GENERIC NODE FINDER REPORT\n`;
+         textReport += `Target Node Type: ${TARGET_NODE_TYPE}\n`;
+         textReport += `Category Filter: ${FILTER_BY_CATEGORY || 'All categories'}\n`;
+         textReport += `Search Date: ${new Date().toISOString()}\n`;
+         textReport += `Files Processed: ${state.processedFiles}\n`;
+         textReport += `Files Skipped (too large): ${state.skippedFiles}\n`;
+         textReport += `Files Filtered by Category: ${state.categoryFilteredFiles}\n`;
+         textReport += `Total Nodes Found: ${state.totalNodesFound}\n`;
+         textReport += `Results Shown: ${state.foundNodes.length}\n`;
+         textReport += `Duration: ${duration} seconds\n\n`;
         
         textReport += `DETAILED RESULTS:\n`;
         textReport += `=`.repeat(40) + `\n`;
@@ -411,7 +432,9 @@ function saveResults(state, duration) {
 function showCompletionDialog(state, duration) {
     const message = `Generic Node Finder Complete!\n\n` +
                    `Target: ${TARGET_NODE_TYPE}\n` +
+                   `Category Filter: ${FILTER_BY_CATEGORY || 'All categories'}\n` +
                    `Files processed: ${state.processedFiles}\n` +
+                   `Files filtered by category: ${state.categoryFilteredFiles}\n` +
                    `Files with target nodes: ${state.filesWithTargetNodes}\n` +
                    `Total nodes found: ${state.totalNodesFound}\n` +
                    `Results displayed: ${state.foundNodes.length}\n` +
