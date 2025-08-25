@@ -9,7 +9,6 @@ import * as Logger from 'Logger.wscript';
 import * as TypeHelper from 'TypeHelper.wscript';
 
 // ===== CONFIGURATION ===== 
-// Game.AddToInventory("Items.Preset_Sidewinder_Divided")
 const SEARCH_STRING = "workspotnode"; // Change this to search for different strings
 const INCLUDE_QUESTPHASE = true;       // Search in .questphase files
 const INCLUDE_SCENE = false;            // Search in .scene files
