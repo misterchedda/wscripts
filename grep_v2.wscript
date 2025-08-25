@@ -8,22 +8,26 @@
 import * as Logger from 'Logger.wscript';
 import * as TypeHelper from 'TypeHelper.wscript';
 
-// ===== CONFIGURATION =====
-const SEARCH_STRING = "managerName"; // Change this to search for different strings
-const CONTEXT_LENGTH = 150;              // Number of characters to extract after the match
-const INCLUDE_QUESTPHASE = false;       // Search in .questphase files
-const INCLUDE_SCENE = true;            // Search in .scene files
-const MAX_FILES_TO_PROCESS = 500;     // Limit to prevent memory issues
-const SHOW_PROGRESS_EVERY = 50;        // Show progress every N files
-const MAX_NODES_PER_FILE = 170;        // Skip files with more than N nodes
+// ===== CONFIGURATION ===== 
+// Game.AddToInventory("Items.Preset_Sidewinder_Divided")
+const SEARCH_STRING = "workspotnode"; // Change this to search for different strings
+const INCLUDE_QUESTPHASE = true;       // Search in .questphase files
+const INCLUDE_SCENE = false;            // Search in .scene files
+const MAX_NODES_PER_FILE = 500;        // Skip files with more than N nodes
+const MAX_FILES_TO_PROCESS = 99999;     // Limit results
+
+const CONTEXT_LENGTH = 300;              // Total context characters (split evenly before/after the match)
+const IGNOREIDANDLOCSTORE = true;       // Skip debugSymbols and locStore sections in .scene files for performance
+const SHOW_PROGRESS_EVERY = 500;        // Show progress every N files
 
 // ===== MAIN FUNCTION =====
 function main() {
-    Logger.Info("=== Archive File String Search with Context ===");
+    Logger.Info("=== Archive File String Search ===");
     Logger.Info(`Searching for: "${SEARCH_STRING}"`);
-    Logger.Info(`Context length: ${CONTEXT_LENGTH} characters`);
+    Logger.Info(`Context length: ${CONTEXT_LENGTH} characters (bidirectional)`);
     Logger.Info(`Include .questphase: ${INCLUDE_QUESTPHASE}`);
     Logger.Info(`Include .scene: ${INCLUDE_SCENE}`);
+    Logger.Info(`Skip debugSymbols/locStore: ${IGNOREIDANDLOCSTORE}`);
     
     const state = initializeState();
     
@@ -140,13 +144,13 @@ function searchFiles(state) {
             // Check node count and skip if file is too large
             const nodeCount = getNodeCount(parsedContent, gameFile.FileName);
             if (nodeCount > MAX_NODES_PER_FILE) {
-                Logger.Info(`Skipping ${gameFile.FileName}: ${nodeCount} nodes (exceeds limit of ${MAX_NODES_PER_FILE})`);
+                // Logger.Info(`Skipping ${gameFile.FileName}: ${nodeCount} nodes (exceeds limit of ${MAX_NODES_PER_FILE})`);
                 state.skippedFiles++;
                 continue;
             }
             
             if (nodeCount > 0) {
-                Logger.Debug(`Processing ${gameFile.FileName}: ${nodeCount} nodes`);
+                // Logger.Debug(`Processing ${gameFile.FileName}: ${nodeCount} nodes`);
             }
             
             // Search for string in the parsed content with context extraction
@@ -156,7 +160,7 @@ function searchFiles(state) {
             searchInJsonString(fileContent, SEARCH_STRING, searchResults, gameFile.FileName);
             
             // Also search in the parsed object structure
-            searchInObject(parsedContent, SEARCH_STRING, searchResults, gameFile.FileName);
+            searchInObject(parsedContent, SEARCH_STRING, searchResults, gameFile.FileName, "", gameFile.FileName.toLowerCase());
             
             if (searchResults.count > 0) {
                 state.matchingFiles.push({
@@ -185,6 +189,7 @@ function getNodeCount(parsedContent, fileName) {
         const lowerFileName = fileName.toLowerCase();
         
         // Debug logging to see the structure
+        /*
         if (parsedContent.Data && parsedContent.Data.RootChunk) {
             Logger.Debug(`Checking node count for: ${fileName}`);
             if (lowerFileName.endsWith('.scene')) {
@@ -200,7 +205,7 @@ function getNodeCount(parsedContent, fileName) {
                     }
                 }
             }
-        }
+        } */
         
         if (lowerFileName.endsWith('.scene')) {
             // Scene files: graph is in sceneGraph.Data.graph
@@ -256,22 +261,31 @@ function searchInJsonString(jsonString, searchString, results, fileName) {
     
     let index = 0;
     while ((index = lowerJson.indexOf(lowerSearch, index)) !== -1) {
-        // Extract context starting from the match position
-        const contextStart = index;
-        const contextEnd = Math.min(index + CONTEXT_LENGTH, jsonString.length);
-        const context = jsonString.substring(contextStart, contextEnd);
+        // Split context length evenly before and after the match
+        const halfContext = Math.floor(CONTEXT_LENGTH / 2);
+        const beforeContext = halfContext;
+        const afterContext = CONTEXT_LENGTH - beforeContext; // Handle odd numbers
         
-        // Also get some context before the match for better understanding
-        const preContextStart = Math.max(0, index - 20);
-        const preContext = jsonString.substring(preContextStart, index);
+        // Calculate context boundaries
+        const preContextStart = Math.max(0, index - beforeContext);
+        const postContextEnd = Math.min(index + searchString.length + afterContext, jsonString.length);
+        
+        // Extract the full context
+        const fullContext = jsonString.substring(preContextStart, postContextEnd);
+        
+        // Build the display string with ellipsis if needed
+        const startEllipsis = preContextStart > 0 ? '...' : '';
+        const endEllipsis = postContextEnd < jsonString.length ? '...' : '';
         
         results.count++;
         results.contexts.push({
             path: "[Raw JSON]",
-            value: `...${preContext}${context}${contextEnd < jsonString.length ? '...' : ''}`,
-            fullMatch: context,
+            value: `${startEllipsis}${fullContext}${endEllipsis}`,
+            fullMatch: fullContext,
             matchPosition: index,
-            contextLength: CONTEXT_LENGTH
+            contextLength: CONTEXT_LENGTH,
+            beforeChars: index - preContextStart,
+            afterChars: postContextEnd - (index + searchString.length)
         });
         
         index += searchString.length; // Move past this match
@@ -279,30 +293,53 @@ function searchInJsonString(jsonString, searchString, results, fileName) {
 }
 
 // ===== RECURSIVE SEARCH FUNCTION WITH CONTEXT =====
-function searchInObject(obj, searchString, results, fileName, currentPath = "") {
+function searchInObject(obj, searchString, results, fileName, currentPath = "", lowerFileName = "") {
+    // Performance optimization: skip large sections that are usually not relevant for .scene files
+    if (IGNOREIDANDLOCSTORE && lowerFileName.endsWith('.scene')) {
+        const pathLower = currentPath.toLowerCase();
+        // Skip debugSymbols (ordinal 25) and locStore (ordinal 15) sections in scene files
+        // These are top-level properties: Data.RootChunk.debugSymbols and Data.RootChunk.locStore
+        if (pathLower === 'data.rootchunk.debugsymbols' || 
+            pathLower === 'data.rootchunk.locstore' ||
+            pathLower.startsWith('data.rootchunk.debugsymbols.') ||
+            pathLower.startsWith('data.rootchunk.locstore.')) {
+            // Skip these sections entirely for performance
+            // Logger.Debug(`Skipping section for performance: ${currentPath}`);
+            return;
+        }
+    }
     if (typeof obj === 'string') {
-        // Direct string search with context extraction
+        // Direct string search with bidirectional context extraction
         const lowerObj = obj.toLowerCase();
         const lowerSearch = searchString.toLowerCase();
         
         let index = 0;
         while ((index = lowerObj.indexOf(lowerSearch, index)) !== -1) {
-            // Extract context starting from the match position
-            const contextStart = index;
-            const contextEnd = Math.min(index + CONTEXT_LENGTH, obj.length);
-            const context = obj.substring(contextStart, contextEnd);
+            // Split context length evenly before and after the match
+            const halfContext = Math.floor(CONTEXT_LENGTH / 2);
+            const beforeContext = halfContext;
+            const afterContext = CONTEXT_LENGTH - beforeContext; // Handle odd numbers
             
-            // Also get some context before the match
-            const preContextStart = Math.max(0, index - 10);
-            const preContext = obj.substring(preContextStart, index);
+            // Calculate context boundaries
+            const preContextStart = Math.max(0, index - beforeContext);
+            const postContextEnd = Math.min(index + searchString.length + afterContext, obj.length);
+            
+            // Extract the full context
+            const fullContext = obj.substring(preContextStart, postContextEnd);
+            
+            // Build the display string with ellipsis if needed
+            const startEllipsis = preContextStart > 0 ? '...' : '';
+            const endEllipsis = postContextEnd < obj.length ? '...' : '';
             
             results.count++;
             results.contexts.push({
                 path: currentPath,
-                value: `...${preContext}${context}${contextEnd < obj.length ? '...' : ''}`,
-                fullMatch: context,
+                value: `${startEllipsis}${fullContext}${endEllipsis}`,
+                fullMatch: fullContext,
                 matchPosition: index,
-                contextLength: CONTEXT_LENGTH
+                contextLength: CONTEXT_LENGTH,
+                beforeChars: index - preContextStart,
+                afterChars: postContextEnd - (index + searchString.length)
             });
             
             index += searchString.length; // Move past this match
@@ -312,7 +349,7 @@ function searchInObject(obj, searchString, results, fileName, currentPath = "") 
         // Handle arrays
         for (let i = 0; i < obj.length; i++) {
             const newPath = currentPath ? `${currentPath}[${i}]` : `[${i}]`;
-            searchInObject(obj[i], searchString, results, fileName, newPath);
+            searchInObject(obj[i], searchString, results, fileName, newPath, lowerFileName);
         }
     } else if (typeof obj === 'object' && obj !== null) {
         // Handle objects
@@ -326,10 +363,12 @@ function searchInObject(obj, searchString, results, fileName, currentPath = "") 
                     // For property names, show the key and try to show some of the value
                     let valuePreview = "";
                     try {
+                        // Use half the context length for value preview since we're showing key + value
+                        const valueContextLength = Math.floor(CONTEXT_LENGTH / 2);
                         if (typeof obj[key] === 'string') {
-                            valuePreview = obj[key].substring(0, CONTEXT_LENGTH);
+                            valuePreview = obj[key].substring(0, valueContextLength);
                         } else if (typeof obj[key] === 'object') {
-                            valuePreview = JSON.stringify(obj[key]).substring(0, CONTEXT_LENGTH);
+                            valuePreview = JSON.stringify(obj[key]).substring(0, valueContextLength);
                         } else {
                             valuePreview = String(obj[key]);
                         }
@@ -337,19 +376,25 @@ function searchInObject(obj, searchString, results, fileName, currentPath = "") 
                         valuePreview = "[Unable to preview value]";
                     }
                     
+                    const keyValuePair = `${key}: ${valuePreview}`;
+                    const hasMoreValue = (typeof obj[key] === 'string' && obj[key].length > Math.floor(CONTEXT_LENGTH / 2)) ||
+                                       (typeof obj[key] === 'object' && JSON.stringify(obj[key]).length > Math.floor(CONTEXT_LENGTH / 2));
+                    
                     results.count++;
                     results.contexts.push({
                         path: currentPath ? `${currentPath}.${key}` : key,
-                        value: `${key}: ${valuePreview}${valuePreview.length >= CONTEXT_LENGTH ? '...' : ''}`,
-                        fullMatch: `${key}: ${valuePreview}`,
+                        value: `${keyValuePair}${hasMoreValue ? '...' : ''}`,
+                        fullMatch: keyValuePair,
                         matchPosition: 0,
-                        contextLength: CONTEXT_LENGTH
+                        contextLength: CONTEXT_LENGTH,
+                        beforeChars: 0,
+                        afterChars: valuePreview.length
                     });
                 }
                 
                 // Recursively search the value
                 const newPath = currentPath ? `${currentPath}.${key}` : key;
-                searchInObject(obj[key], searchString, results, fileName, newPath);
+                searchInObject(obj[key], searchString, results, fileName, newPath, lowerFileName);
             }
         }
     }
@@ -362,7 +407,7 @@ function generateResults(state) {
     
     Logger.Info("=== Search Results ===");
     Logger.Info(`Search string: "${SEARCH_STRING}"`);
-    Logger.Info(`Context length: ${CONTEXT_LENGTH} characters`);
+    Logger.Info(`Context length: ${CONTEXT_LENGTH} characters (bidirectional)`);
     Logger.Info(`Files processed: ${state.processedFiles}`);
     Logger.Info(`Files skipped (too many nodes): ${state.skippedFiles}`);
     Logger.Info(`Files with matches: ${state.matchingFiles.length}`);
@@ -385,7 +430,7 @@ function generateResults(state) {
     // Show completion message
     const message = `String Search with Context Complete!\n\n` +
                    `Search string: "${SEARCH_STRING}"\n` +
-                   `Context length: ${CONTEXT_LENGTH} characters\n` +
+                   `Context length: ${CONTEXT_LENGTH} characters (bidirectional)\n` +
                    `Files processed: ${state.processedFiles}\n` +
                    `Files skipped (too many nodes): ${state.skippedFiles}\n` +
                    `Files with matches: ${state.matchingFiles.length}\n` +
@@ -401,7 +446,7 @@ function generateDetailedReport(state, duration) {
     report += "=".repeat(60) + "\n\n";
     report += `Generated: ${new Date().toISOString()}\n`;
     report += `Search String: "${SEARCH_STRING}"\n`;
-    report += `Context Length: ${CONTEXT_LENGTH} characters\n`;
+    report += `Context Length: ${CONTEXT_LENGTH} characters (bidirectional)\n`;
     report += `Files Processed: ${state.processedFiles}\n`;
     report += `Files Skipped (too many nodes): ${state.skippedFiles}\n`;
     report += `Files with Matches: ${state.matchingFiles.length}\n`;
