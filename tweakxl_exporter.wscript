@@ -1,4 +1,4 @@
-// @version 1.0
+// @version 1.1
 // @author MisterChedda
 
 /*
@@ -21,7 +21,7 @@
  */
 
 // ===== CONFIGURATION =====
-var STARTING_RECORD = "Items.Preset_Tomahawk_Default";
+var STARTING_RECORD = "Items.Preset_Achilles_Default";
 var MAX_DEPTH = 10;
 var BATCH_SIZE = 100;
 var MAX_RECORDS_PER_TYPE = 1000;
@@ -537,7 +537,7 @@ function createYamlForRecord(recordPath, recordData) {
             }
             
             try {
-                yaml += "  " + key + ": " + formatYamlValue(dataSource[key], 2) + "\n";
+                yaml += "  " + key + ": " + formatYamlValue(dataSource[key], 4) + "\n";
             } catch (keyError) {
                 yaml += "  " + key + ": # Error formatting value: " + keyError.message + "\n";
             }
@@ -562,7 +562,7 @@ function formatYamlValue(value, indent) {
     
     // Handle TweakDB-style objects with $type, $storage, $value
     if (typeof value === 'object' && value.$type && value.$value !== undefined) {
-        return formatTweakDBValue(value);
+        return formatYamlValue(formatTweakDBValue(value), indent);
     }
     
     // Handle arrays
@@ -599,11 +599,12 @@ function formatYamlValue(value, indent) {
         if (value === "") {
             return "''";
         }
+        value = value.replaceAll("\\", "\\\\");
         // Don't quote simple TweakDB IDs and paths
         if (isSimpleTweakDBValue(value)) {
             return value;
         }
-        return "\"" + value.replace(/"/g, '\\"') + "\"";
+        return "\"" + value.replaceAll('"', '\\"') + "\"";
     }
     
     if (typeof value === 'boolean') {
